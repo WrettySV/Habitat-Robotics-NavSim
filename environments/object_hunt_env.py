@@ -3,6 +3,7 @@ import gym
 from gym import spaces
 import cv2
 from utils.map_generator import HabitatMapGenerator
+import networkx as nx
 
 class ObjectHuntEnv(gym.Env):
     def __init__(self, map_size=(200, 200), max_steps=30000, view_distance=20, view_angle=60, agent_size=(10, 10), seed=None):
@@ -21,6 +22,7 @@ class ObjectHuntEnv(gym.Env):
         self.steps = 0
         self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Box(low=0, high=1, shape=(view_distance, view_distance, 1), dtype=np.uint8)
+
 
     def step(self, action):
 
@@ -57,6 +59,9 @@ class ObjectHuntEnv(gym.Env):
             reward -= 10 # Penalize if stuck
 
         visible_objects = self.get_visible_objects()
+        from graph.graph_builder import GraphBuilder
+        GraphBuilder.update_graph(visible_objects)
+
         new_objects = visible_objects - self.collected_objects
         self.collected_objects.update(new_objects)
 

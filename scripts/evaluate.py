@@ -1,19 +1,21 @@
 import cv2
 from stable_baselines3 import PPO
 from environments.object_hunt_env import ObjectHuntEnv
+from graph.graph_builder import GraphBuilder
 
 class ObjectHuntEvaluator:
-    def __init__(self, model_path, num_episodes=3, max_steps=30000, save_videos=True):
+    def __init__(self, model_path, num_episodes=3, max_steps=30000, seed=None, save_videos=True):
         """Initializes the evaluator."""
         self.model = PPO.load(model_path)
         self.num_episodes = num_episodes
         self.max_steps = max_steps
         self.save_videos = save_videos
+        self.seed = seed
 
     def evaluate(self):
         """Runs multiple evaluation episodes and records videos."""
         for episode in range(1, self.num_episodes + 1):
-            env = ObjectHuntEnv(max_steps=self.max_steps)
+            env = ObjectHuntEnv(max_steps=self.max_steps, seed = self.seed)
             obs = env.reset()
             frames = []
             done = False
@@ -35,6 +37,8 @@ class ObjectHuntEvaluator:
             if self.save_videos:
                 self.save_video(frames, episode)
 
+            GraphBuilder.save_graph(file_path=f'graph/evaluate_knowledge_graph_{episode}.png')
+
     def save_video(self, frames, episode):
         """Saves frames as a video file."""
         height, width, _ = frames[0].shape
@@ -49,3 +53,4 @@ class ObjectHuntEvaluator:
 if __name__ == "__main__":
     evaluator = ObjectHuntEvaluator(model_path="models/ppo_object_hunt_weights", num_episodes=3)
     evaluator.evaluate()
+
