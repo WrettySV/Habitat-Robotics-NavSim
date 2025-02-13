@@ -1,0 +1,24 @@
+import argparse
+from scripts.train import ObjectHuntTrainer
+from scripts.evaluate import ObjectHuntEvaluator
+from environments.object_hunt_env import ObjectHuntEnv
+from stable_baselines3 import PPO
+
+def train_agent():
+    env = ObjectHuntEnv(max_steps=30000)
+    trainer = ObjectHuntTrainer(env, PPO, model_kwargs={"learning_rate" : 0.00005, "ent_coef" : 0.01, "verbose": 1})
+    trainer.train(timesteps=100000)
+
+def evaluate_agent():
+    evaluator = ObjectHuntEvaluator(model_path="models/ppo_object_hunt_weights", num_episodes=3)
+    evaluator.evaluate()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["train", "evaluate"], required=True, help="Choose to train or evaluate the model")
+    args = parser.parse_args()
+
+    if args.mode == "train":
+        train_agent()
+    elif args.mode == "evaluate":
+        evaluate_agent()
