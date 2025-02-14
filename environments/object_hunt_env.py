@@ -52,16 +52,16 @@ class ObjectHuntEnv(gym.Env):
             self.agent_dir = (self.agent_dir - 15) % 360  # Rotate left
         elif action == 5:
             self.agent_dir = (self.agent_dir + 15) % 360  # Rotate right
+
         else:
             reward -= 1  # Penalize for hitting an obstacle
 
         if np.array_equal(self.agent_pos, prev_pos):  
-            reward -= 10 # Penalize if stuck
+            reward -= 1 # Penalize for returning to the same position
 
         visible_objects = self.get_visible_objects()
         from graph.graph_builder import GraphBuilder
         GraphBuilder.update_graph(visible_objects)
-
         new_objects = visible_objects - self.collected_objects
         self.collected_objects.update(new_objects)
 
@@ -72,7 +72,7 @@ class ObjectHuntEnv(gym.Env):
             self.visited_positions.add(tuple(self.agent_pos))
             reward += 1000/self.max_steps
         else:
-            reward -= 10
+            reward -= 1
 
         movement_distance = np.linalg.norm(self.agent_pos - prev_pos)
         reward += movement_distance #reward for step (not rotation)

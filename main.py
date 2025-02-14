@@ -5,12 +5,12 @@ from environments.object_hunt_env import ObjectHuntEnv
 from stable_baselines3 import PPO
 
 def train_agent(seed):
-    env = ObjectHuntEnv(max_steps=30000, seed=seed)
+    env = ObjectHuntEnv(max_steps=10000, seed=seed)
     trainer = ObjectHuntTrainer(env, PPO, model_kwargs={"learning_rate" : 0.00005, "ent_coef" : 0.01, "verbose": 1})
     trainer.train(timesteps=100000)
 
 def evaluate_agent(seed):
-    evaluator = ObjectHuntEvaluator(model_path="models/ppo_object_hunt_weights", num_episodes=3, seed=seed)
+    evaluator = ObjectHuntEvaluator(model_path="models/ppo_object_hunt_weights", seed=seed)
     evaluator.evaluate()
 
 if __name__ == "__main__":
