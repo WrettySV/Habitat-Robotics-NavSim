@@ -2,33 +2,53 @@ import numpy as np
 import gym
 from gym import spaces
 import cv2
-from utils.map_generator import HabitatMapGenerator
+from maps.map_generator import HabitatMapGenerator
 import networkx as nx
 
 class ObjectHuntEnv(gym.Env):
-    def __init__(self, map_size=(200, 200), max_steps=30000, view_distance=20, view_angle=60, agent_size=(10, 10), seed=None):
+    def __init__(self, mode, run, reward_params, penalty_params, seed, max_steps, map_size=(200, 200), num_objects=10, view_distance=20, view_angle=60, agent_size=(10, 10)):
         super().__init__()
+
+        self.mode = mode
+        self.run = run
         self.map_size = map_size
+        self.num_objects = num_objects
         self.max_steps = max_steps
         self.view_distance = view_distance
         self.view_angle = view_angle
         self.agent_size = agent_size
-        self.seed = seed
-        self.instance_map = HabitatMapGenerator.generate(map_size, seed=seed)
-        self.agent_pos = np.array(agent_size)
+        
+        self.instance_map = HabitatMapGenerator.generate(map_size=map_size, num_objects = num_objects, seed=seed)
+        
+        self.agent_pos = self.set_agent_start_position()
         self.agent_dir = np.random.randint(0, 360)
         self.collected_objects = set()
+        self.cmlt_collected_objects = set() #do not reset
+
         self.visited_positions = set()
-        self.steps = 0
+        self.steps = 0             
+        self.steps_since_last_object = 0
+        self.steps_between_objects = []
+
+        self.episode_reward = 0
+
+        self.total_reward = 0 #do not reset
+        
+        # self.ep_avg_steps_between_objects = [] #do not rest
+        # self.ep_steps = [] #do not rest
+
         self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Box(low=0, high=1, shape=(view_distance, view_distance, 1), dtype=np.uint8)
 
-
+        self.reward_params = reward_params 
+        self.penalty_params = penalty_params 
+        self.seed = seed
+    
     def step(self, action):
 
         prev_pos = self.agent_pos.copy()
         height, width = self.agent_size
-        reward = -0.1
+        reward = 0
 
         # Define movement logic considering agent size; #+1 at the and for include the upper bound
         if (action == 0 and prev_pos[0] - height // 2 - 1 >= 0 and 
@@ -54,47 +74,87 @@ class ObjectHuntEnv(gym.Env):
             self.agent_dir = (self.agent_dir + 15) % 360  # Rotate right
 
         else:
-            reward -= 1  # Penalize for hitting an obstacle
+            reward -= self.penalty_params["obstacle"]  # Penalize for hitting an obstacle
 
-        if np.array_equal(self.agent_pos, prev_pos):  
-            reward -= 1 # Penalize for returning to the same position
+        # if np.array_equal(self.agent_pos, prev_pos):  
+        #     reward -= self.penalty_params["prev_position"] # Penalize for returning to the same position
 
         visible_objects = self.get_visible_objects()
         from graph.graph_builder import GraphBuilder
         GraphBuilder.update_graph(visible_objects)
         new_objects = visible_objects - self.collected_objects
         self.collected_objects.update(new_objects)
+        self.cmlt_collected_objects.update(new_objects)
 
         if new_objects:
-            reward += 100 * len(new_objects)
+            reward += self.reward_params["new_object"] * len(new_objects)
+            self.steps_between_objects.append(self.steps_since_last_object)  # Log steps
+            self.steps_since_last_object = 0
 
         if tuple(self.agent_pos) not in self.visited_positions:
             self.visited_positions.add(tuple(self.agent_pos))
-            reward += 1000/self.max_steps
+            reward += self.reward_params["tot_ep_exploration"]/self.max_steps
         else:
-            reward -= 1
-
-        movement_distance = np.linalg.norm(self.agent_pos - prev_pos)
-        reward += movement_distance #reward for step (not rotation)
+            reward -= self.penalty_params["same_position"]
 
         self.steps += 1
-        done = self.steps >= self.max_steps
+        self.steps_since_last_object += 1
+
+        
+        self.total_reward += reward
+        self.episode_reward += reward
+
+        done = self.steps >= self.max_steps or len(self.collected_objects) == self.num_objects
+        if done:
+            if (self.mode == "train"):
+                avg_steps_between_objects = (sum(self.steps_between_objects) / len(self.steps_between_objects)) if self.steps_between_objects else 0
+                self.run["train/episode_avg_steps_between_objects"].append(avg_steps_between_objects)
+                self.run["train/episode_steps"].append(self.steps)
+                self.run["train/episode_reward"].append(self.episode_reward)
+                self.run["train/episode_num_collected_objects"].append(len(self.collected_objects))
+                self.run["train/episode_cumulative_num_collected_objects"].append(len(self.cmlt_collected_objects))
+
+            
+            if (self.mode == "eval"):
+                avg_steps_between_objects = (sum(self.steps_between_objects) / len(self.steps_between_objects)) if self.steps_between_objects else 0
+                self.run["eval/episode_avg_steps_between_objects"].append(avg_steps_between_objects)
+                self.run["eval/episode_steps"].append(self.steps)
+                self.run["eval/episode_reward"].append(self.episode_reward)
+                self.run["eval/episode_cumulative_num_collected_objects"].append(len(self.cmlt_collected_objects))
+
+        
 
         return self.get_observation(), reward, done, {}
 
+
     def get_visible_objects(self):
         visible_objects = set()
-        cx, cy = self.agent_pos
+        cx, cy = self.agent_pos  
 
         for i in range(-self.view_distance, self.view_distance + 1):
             for j in range(-self.view_distance, self.view_distance + 1):
                 x, y = cx + i, cy + j
-                if 0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]:
-                    angle = np.degrees(np.arctan2(j, i)) % 360
-                    if abs((angle - self.agent_dir + 180) % 360 - 180) <= self.view_angle / 2:
-                        obj_id = self.instance_map[x, y]
-                        if obj_id > 0:
-                            visible_objects.add(obj_id)
+                if not (0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]): #the position is within map bounds
+                    continue
+                distance = np.sqrt(i**2 + j**2)
+                if distance > self.view_distance:
+                    continue  # Ignore objects beyond the view distance
+                angle_to_object = (np.degrees(np.arctan2(j, i)) + 360) % 360 #relative angle to the object (in degrees)
+
+                # Compute the agent's field of view boundaries
+                left_bound = (self.agent_dir - self.view_angle / 2) % 360
+                right_bound = (self.agent_dir + self.view_angle / 2) % 360
+
+                if left_bound < right_bound:
+                    in_view = left_bound <= angle_to_object <= right_bound
+                else:
+                    in_view = angle_to_object >= left_bound or angle_to_object <= right_bound
+
+                if in_view:
+                    obj_id = self.instance_map[x, y]
+                    if obj_id > 0:
+                        visible_objects.add(obj_id)
+
         return visible_objects
 
     def get_observation(self):
@@ -112,32 +172,28 @@ class ObjectHuntEnv(gym.Env):
 
     def reset(self):
       
-      
-      attempts = 0
-      max_attempts=100
-      while attempts < max_attempts:
-          # Randomly select a position ensuring it fits the agent's size
-          x = np.random.randint(self.agent_size[0] // 2, self.map_size[0] - self.agent_size[0] // 2)
-          y = np.random.randint(self.agent_size[1] // 2, self.map_size[1] - self.agent_size[1] // 2)
-
-          # Check if the area occupied by the agent is free
-          if np.all(self.instance_map[x - self.agent_size[0]// 2 : x + self.agent_size[0]// 2, 
-                                      y - self.agent_size[1]//2 : y + self.agent_size[1]//2] == 0):
-              self.agent_pos = np.array([x, y])
-              break
-
-          attempts += 1
-          if attempts == max_attempts:
-            self.agent_pos = np.array(self.agent_size)
-
-    
-      # Fallback position if no valid position is found
-      #   c0_vert, c1_hor = self.agent_size
-      #   self.agent_pos = np.array((c0_vert+180, c1_hor))  # Fallback position
+      self.agent_pos = self.set_agent_start_position()
       self.agent_dir = np.random.randint(0, 360)
-      self.collected_objects.clear()
+      self.collected_objects = set()
+      self.visited_positions = set()
+
       self.steps = 0
+      self.steps_since_last_object = 0
+      self.steps_between_objects = []
+      self.episode_reward = 0
+
+
       return self.get_observation()
+    
+
+    def set_agent_start_position(self):
+        while True:
+            x = np.random.randint(self.agent_size[0] // 2, self.map_size[0] - self.agent_size[0] // 2)
+            y = np.random.randint(self.agent_size[1] // 2, self.map_size[1] - self.agent_size[1] // 2)
+
+            if np.all(self.instance_map[x - self.agent_size[0] // 2: x + self.agent_size[0] // 2,
+                                        y - self.agent_size[1] // 2: y + self.agent_size[1] // 2] == 0):
+                return np.array([x, y])
 
 
     def render(self, mode='human'):

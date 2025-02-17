@@ -3,3 +3,4 @@ shimmy>=2.0
 numpy
 opencv-python
 gym
+neptune
