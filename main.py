@@ -15,7 +15,10 @@ def make_env(mode, run, max_steps, reward_params, penalty_params, seed):
 
 def train_and_evaluate(params):
     reward_params, penalty_params, ppo_params, max_steps, timesteps, seed = params
+    param_filename = get_param_filename(reward_params,penalty_params,seed,max_steps)
+
     run = init_neptune()
+    run["sys/name"] = param_filename
     run["params/reward_params"] = reward_params
     run["params/penalty_params"] = penalty_params
     run["params/ppo_params"] = ppo_params
@@ -27,7 +30,6 @@ def train_and_evaluate(params):
     #envs = SubprocVecEnv([make_env("train", run, max_steps, reward_params, penalty_params, seed) for _ in range(num_envs)])
     env = ObjectHuntEnv(mode="train", run=run, max_steps=max_steps, reward_params=reward_params, penalty_params=penalty_params, seed=seed)
     trainer = ObjectHuntTrainer(env, run, model_kwargs=ppo_params)
-    param_filename = get_param_filename(env, max_steps)
     trainer.train(timesteps=timesteps, param_filename=param_filename)
     #envs.close()
     env.close()
@@ -36,7 +38,7 @@ def train_and_evaluate(params):
     
     # Create a single evaluation environment
     eval_env = ObjectHuntEnv(mode="eval", run=run, max_steps=20000, reward_params=reward_params, penalty_params=penalty_params, seed=seed)
-    evaluator = ObjectHuntEvaluator(eval_env, run, model_path=f"models/ppo_object_hunt_weights_{param_filename}")
+    evaluator = ObjectHuntEvaluator(eval_env, run, model_path="models/ppo_object_hunt_weights")
     evaluator.evaluate(param_filename=param_filename)
     eval_env.close()
     
@@ -48,7 +50,7 @@ if __name__ == "__main__":
     ppo_hyperparams_grid = {"learning_rate": [2.5e-4], "batch_size": [64], "n_epochs": [4], "ent_coef": [0.01], "gamma": [0.9999]}
     max_steps_grid = [1000, 10000, 20000]
     timesteps_grid = [100000]
-    seeds = [13, 27]
+    seeds = [43]
 
 
 
@@ -69,5 +71,5 @@ if __name__ == "__main__":
         ppo_params = {"learning_rate": learning_rate, "batch_size": batch_size, "n_epochs": n_epochs, "ent_coef": ent_coef, "gamma": gamma}
         param_list.append((reward_params, penalty_params, ppo_params, max_steps, timesteps, seed))
 
-    with multiprocessing.Pool(processes=8) as pool:
+    with multiprocessing.Pool(processes=2) as pool:
         pool.map(train_and_evaluate, param_list)

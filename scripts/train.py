@@ -21,7 +21,7 @@ class ObjectHuntTrainer:
         self.model.learn(total_timesteps=timesteps,callback=callback)
         self.run["train/final_reward"].append(self.env.total_reward)
 
-        self.model.save(f"models/ppo_object_hunt_weights_{param_filename}")
+        self.model.save("models/ppo_object_hunt_weights")
         GraphBuilder.save_graph(file_path=f"graph/train_knowledge_graph_{param_filename}.png")
 
     
