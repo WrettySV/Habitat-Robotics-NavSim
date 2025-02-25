@@ -48,7 +48,7 @@ if __name__ == "__main__":
     penalty_params_grid = {"same_position": [0], "obstacle": [500]}
     #ppo_hyperparams_grid = {"learning_rate": [0.0003, 2.5e-4], "batch_size": [64], "n_epochs": [4], "ent_coef": [0.01], "gamma": [0.9999]}
     max_steps_grid = [2000]
-    timesteps_grid = [2000000]
+    timesteps_grid = [4000]
     seeds = [56,57]
 
 

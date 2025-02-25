@@ -1,9 +1,12 @@
 import numpy as np
-import gym
-from gym import spaces
+# from gym import spaces
 import cv2
 from maps.map_generator import HabitatMapGenerator
 import networkx as nx
+from graph.graph_builder import GraphBuilder
+import gymnasium as gym
+from gymnasium.spaces import Graph, Box, Discrete, GraphInstance, Dict
+
 
 class ObjectHuntEnv(gym.Env):
     def __init__(self, mode, run, reward_params, penalty_params, seed, param_filename, max_steps, map_size=(200, 200), num_objects=10, view_distance=20, view_angle=60, agent_size=(10, 10)):
@@ -41,13 +44,19 @@ class ObjectHuntEnv(gym.Env):
         # self.ep_avg_steps_between_objects = [] #do not rest
         # self.ep_steps = [] #do not rest
 
-        self.action_space = spaces.Discrete(6)
+        self.action_space = Discrete(6)
         # self.observation_space = spaces.Box(low=0, high=1, shape=(view_distance, view_distance, 1), dtype=np.uint8)
 
-        self.observation_space = spaces.Dict({
-        "map": spaces.Box(low=0.0, high=1.0, shape=(view_distance, view_distance, 1), dtype=np.float32), #normalized, 1 channel for NN
-        "collected_objects": spaces.Box(low=0, high=num_objects, shape=(1,), dtype=np.int32),
-        "new_objects": spaces.Box(low=0, high=num_objects, shape=(1,), dtype=np.int32),
+        self.agent_space = Box(low=0, high=360, shape=(3,), dtype=np.int32) #agent_pos_x, agent_pos_y, agent_dir
+        self.graph_space = Graph(
+            node_space = Box(low=0, high=200, shape=(2,), dtype=np.int32), #y_center, x_center
+            edge_space = Discrete(1) 
+        )
+
+
+        self.observation_space = Dict({
+            "agent_space": self.agent_space,
+            "graph_space": self.graph_space,
         })
 
 
@@ -92,8 +101,12 @@ class ObjectHuntEnv(gym.Env):
         #     reward -= self.penalty_params["prev_position"] # Penalize for returning to the same position
 
         visible_objects = self.get_visible_objects()
-        from graph.graph_builder import GraphBuilder
-        GraphBuilder.update_graph(visible_objects)
+        object_centers = {
+            obj_id: self.get_object_bbox(obj_id)["center"]
+            for obj_id in visible_objects
+            if self.get_object_bbox(obj_id) is not None  
+        }
+        GraphBuilder.update_graph(object_centers)
         new_objects = visible_objects - self.collected_objects
         self.collected_objects.update(new_objects)
         self.cmlt_collected_objects.update(new_objects)
@@ -103,6 +116,7 @@ class ObjectHuntEnv(gym.Env):
             self.steps_between_objects.append(self.steps_since_last_object)  # Log steps
             self.steps_since_last_object = 0
             self.episode_newobj_reward += self.reward_params["new_object"] * (len(self.collected_objects) + 1) * len(new_objects)
+            self.get_observation(is_log_file=True)
             if (len(new_objects) >=3):
                 self.render()
 
@@ -151,6 +165,7 @@ class ObjectHuntEnv(gym.Env):
                 self.run["eval/reward"].append(reward)
             
             if (self.mode == "train"):
+                
                 avg_steps_between_objects = (sum(self.steps_between_objects) / len(self.steps_between_objects)) if self.steps_between_objects else 0
                 self.run["train/episode_avg_steps_between_objects"].append(avg_steps_between_objects)
                 self.run["train/episode_steps"].append(self.steps)
@@ -175,7 +190,7 @@ class ObjectHuntEnv(gym.Env):
 
         
 
-        return self.get_observation(len(new_objects)), reward, done, {}
+        return self.get_observation(is_log_file=False), reward, done, {}
 
 
     def get_visible_objects(self):
@@ -208,31 +223,106 @@ class ObjectHuntEnv(gym.Env):
 
         return visible_objects
     
+# def get_visible_objects(self):
+#     visible_objects = {}  # dict: obj_id -> set of (agent_pos, agent_dir)
+#     object_positions = {}  # obj_id -> list of average (x, y) coordinates
+#     cx, cy = self.agent_pos  
 
-    def get_observation(self, num_new_obj):
-        obs = np.zeros((self.view_distance, self.view_distance), dtype=np.uint8)
-        cx, cy = self.agent_pos
+#     for i in range(-self.view_distance, self.view_distance + 1):
+#         for j in range(-self.view_distance, self.view_distance + 1):
+#             x, y = cx + i, cy + j
+#             if not (0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]):  # Ensure within map bounds
+#                 continue
 
-        for i in range(-self.view_distance // 2, self.view_distance // 2):
-            for j in range(-self.view_distance // 2, self.view_distance // 2):
-                x, y = cx + i, cy + j
-                if 0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]:
-                    angle = np.degrees(np.arctan2(j, i)) % 360
-                    if abs((angle - self.agent_dir + 180) % 360 - 180) <= self.view_angle / 2:
-                        obs[i + self.view_distance // 2, j + self.view_distance // 2] = self.instance_map[x, y]
+#             distance = np.sqrt(i**2 + j**2)
+#             if distance > self.view_distance:
+#                 continue  # Ignore objects beyond the view distance
+
+#             angle_to_object = (np.degrees(np.arctan2(j, i)) + 360) % 360  # Relative angle to object
+
+#             # Compute the agent's field of view boundaries
+#             left_bound = (self.agent_dir - self.view_angle / 2) % 360
+#             right_bound = (self.agent_dir + self.view_angle / 2) % 360
+
+#             if left_bound < right_bound:
+#                 in_view = left_bound <= angle_to_object <= right_bound
+#             else:
+#                 in_view = angle_to_object >= left_bound or angle_to_object <= right_bound
+
+#             if in_view:
+#                 obj_id = self.instance_map[x, y]
+#                 if obj_id > 0:
+#                     if obj_id not in visible_objects:
+#                         visible_objects[obj_id] = (self.agent_pos, self.agent_dir)
+#                         object_positions[obj_id] = []  
+#                     object_positions[obj_id].append((x, y)) 
+
+#     object_centroids = {
+#         obj_id: (
+#             np.mean([pos[0] for pos in positions]),  # Average X
+#             np.mean([pos[1] for pos in positions])   # Average Y
+#         )
+#         for obj_id, positions in object_positions.items()
+#     }
+
+#     return visible_objects, object_centroids
+
+
+    
+
+    # def get_observation(self, num_new_obj):
+    #     obs = np.zeros((self.view_distance, self.view_distance), dtype=np.uint8)
+    #     cx, cy = self.agent_pos
+
+    #     for i in range(-self.view_distance // 2, self.view_distance // 2):
+    #         for j in range(-self.view_distance // 2, self.view_distance // 2):
+    #             x, y = cx + i, cy + j
+    #             if 0 <= x < self.map_size[0] and 0 <= y < self.map_size[1]:
+    #                 angle = np.degrees(np.arctan2(j, i)) % 360
+    #                 if abs((angle - self.agent_dir + 180) % 360 - 180) <= self.view_angle / 2:
+    #                     obs[i + self.view_distance // 2, j + self.view_distance // 2] = self.instance_map[x, y]
         
-        # Normalize map values to [0,1] for PPO
-        obs = obs.astype(np.float32) / self.num_objects  
+    #     # Normalize map values to [0,1] for PPO
+    #     obs = obs.astype(np.float32) / self.num_objects  
 
-        return {
-            "map": obs[..., np.newaxis],  # Add channel dimension (H, W, 1)
-            "collected_objects": np.array([len(self.collected_objects)], dtype=np.int32),
-            "new_objects": np.array([num_new_obj], dtype=np.int32),
-        }
+    #     return {
+    #         "map": obs[..., np.newaxis],  # Add channel dimension (H, W, 1)
+    #         "collected_objects": np.array([len(self.collected_objects)], dtype=np.int32),
+    #         "new_objects": np.array([num_new_obj], dtype=np.int32),
+    #     }
 
+    def get_observation(self, is_log_file):
+
+        gym_graph = GraphBuilder.to_observation()
+
+        obs = {
+            "agent_space": np.array([self.agent_pos[1], self.agent_pos[0], self.agent_dir]),
+            "graph_space": gym_graph
+        } 
+
+        if is_log_file:
+            self.log_observation(obs)
+
+        return obs
+
+    def log_observation(self, obs):
+        """Logs and prints the GraphInstance."""
+        with open("graph/GraphInstance", "a") as f:
+            f.write("\n--- Agent Position ---\n")
+            f.write(obs["agent_space"] + "\n") 
+            f.write("\n--- Graph Observation ---\n")
+            f.write(str(obs["graph_space"]) + "\n")  
+            f.write("-------------------------\n")
+            f.write(obs["graph_space"] + "\n") 
+            valid = self.graph_space.contains(obs)
+            f.write(f"Gym Graph Valid: {valid}\n")
+            f.write("-------------------------\n")
 
 
     def reset(self):
+      
+      GraphBuilder.reset_graph()
+
       
       self.agent_pos = self.set_agent_start_position()
       self.agent_dir = np.random.randint(0, 360)
@@ -246,7 +336,7 @@ class ObjectHuntEnv(gym.Env):
       self.episode_newobj_reward = 0
 
 
-      return self.get_observation(0)
+      return self.get_observation(is_log_file=False)
     
 
     def set_agent_start_position(self):
@@ -296,11 +386,13 @@ class ObjectHuntEnv(gym.Env):
       for obj_id in self.collected_objects:
           bbox = self.get_object_bbox(obj_id)
           if bbox is not None:
+              bbox = bbox["bbox"]
               cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 255, 255), 1)
 
       for obj_id in visible_objects:
           bbox = self.get_object_bbox(obj_id)  
           if bbox is not None:
+              bbox = bbox["bbox"]
               cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (0, 0, 255), 1)  
 
 
@@ -311,10 +403,29 @@ class ObjectHuntEnv(gym.Env):
       return img
 
 
+    # def get_object_bbox(self, obj_id):
+    #   object_indices = np.argwhere(self.instance_map == obj_id)
+    #   if object_indices.size > 0:
+    #       x_min, y_min = object_indices.min(axis=0)
+    #       x_max, y_max = object_indices.max(axis=0)
+    #       return (y_min, x_min, y_max, x_max)  # (y_min, x_min) to (y_max, x_max) for rectangle
+    #   return None
+    
+
     def get_object_bbox(self, obj_id):
-      object_indices = np.argwhere(self.instance_map == obj_id)
-      if object_indices.size > 0:
-          x_min, y_min = object_indices.min(axis=0)
-          x_max, y_max = object_indices.max(axis=0)
-          return (y_min, x_min, y_max, x_max)  # (y_min, x_min) to (y_max, x_max) for rectangle
-      return None
+        object_indices = np.argwhere(self.instance_map == obj_id)
+        
+        if object_indices.size > 0:
+            x_min, y_min = object_indices.min(axis=0)
+            x_max, y_max = object_indices.max(axis=0)
+
+            # Compute bbox center (centroid)
+            center_x = (x_min + x_max) / 2
+            center_y = (y_min + y_max) / 2
+
+            return {
+                "bbox": (y_min, x_min, y_max, x_max),  # Bounding box: (top-left to bottom-right)
+                "center": (center_y, center_x)  # Center of the bounding box
+            }
+        
+        return None
